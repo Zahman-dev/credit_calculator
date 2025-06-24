@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  # MLflow Tracking Server
+  mlflow:
+    image: python:3.9-slim
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlruns:/mlflow/mlruns
+      - ./mlartifacts:/mlflow/mlartifacts
+    working_dir: /mlflow
+    command: >
+      bash -c "
+        pip install mlflow boto3 pymysql &&
+        mlflow server 
+          --backend-store-uri file:///mlflow/mlruns
+          --default-artifact-root file:///mlflow/mlartifacts
+          --host 0.0.0.0
+          --port 5000
+      "
+    environment:
+      - MLFLOW_TRACKING_URI=http://localhost:5000
+    networks:
+      - credit-risk-network
+
+  # Credit Risk API
+  credit-risk-api:
+    build: .
+    ports:
+      - "8000:80"
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_MODEL_NAME=credit_risk_model
+    depends_on:
+      - mlflow
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+    networks:
+      - credit-risk-network
+    restart: unless-stopped
+
+  # Jupyter Notebook for development
+  jupyter:
+    image: jupyter/scipy-notebook:latest
+    ports:
+      - "8888:8888"
+    volumes:
+      - .:/home/jovyan/work
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    networks:
+      - credit-risk-network
+    command: start-notebook.sh
+
+  # Prometheus for monitoring (optional)
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - credit-risk-network
+    profiles:
+      - monitoring
+
+  # Grafana for visualization (optional)
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      # - GF_SECURITY_ADMIN_PASSWORD=admin  # Use environment variables for production
+      - GF_SECURITY_ADMIN_USER=admin
+    volumes:
+      - grafana-storage:/var/lib/grafana
+    networks:
+      - credit-risk-network
+    profiles:
+      - monitoring
+
+networks:
+  credit-risk-network:
+    driver: bridge
+
+volumes:
+  grafana-storage: 
