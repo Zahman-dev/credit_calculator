@@ -10,7 +10,7 @@ import mlflow.sklearn
 from fastapi import FastAPI, HTTPException, Security, status, Depends
 from pydantic import BaseModel, Field
 import uvicorn
-from prometheus_fastapi_instrumentator import Instrumentator  # type: ignore
+from prometheus_fastapi_instrumentator import Instrumentator
 from src.logging_config import setup_logging  # noqa: F401  # side-effect import
 from src.config import (
     API_TITLE, API_DESCRIPTION, API_VERSION,
@@ -19,6 +19,7 @@ from src.config import (
 from starlette.concurrency import run_in_threadpool
 from fastapi.security.api_key import APIKeyHeader
 from src.observability import init_observability, set_model_version
+import joblib
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -114,21 +115,31 @@ class PredictionResponse(BaseModel):
 async def load_model():
     """Load the trained model on startup"""
     global model
+    model_loaded = False
     
-    # Determine model URI
-    default_uri = f"models:/{MLFLOW_MODEL_NAME}/Production"
-    model_uri = os.getenv("MODEL_URI", default_uri)
-
+    # Try local joblib file first (more reliable)
     try:
-        model = mlflow.sklearn.load_model(model_uri)  # type: ignore[attr-defined]
-        # Record model version label for Prometheus
-        version_label = model_uri.split(":")[-1] if ":" in model_uri else model_uri
-        set_model_version(version_label)
-        print(f"✅ Model loaded from {model_uri}")
+        model_path = os.getenv("FALLBACK_MODEL_PATH", "models/logistic_regression_model.joblib")
+        model = joblib.load(model_path)
+        set_model_version("local-joblib")
+        print(f"✅ Model loaded from {model_path} (joblib)")
+        model_loaded = True
     except Exception as e:
-        raise RuntimeError(
-            f"FATAL: Could not load model from '{model_uri}'. Error: {e}"
-        )
+        print(f"⚠️  Local model load failed: {e}")
+        
+        # Fallback: try MLflow
+        try:
+            # Try specific version first, then latest  
+            model_uri = os.getenv("MODEL_URI", f"models:/{MLFLOW_MODEL_NAME}/8")  # Use latest version 8
+            model = mlflow.sklearn.load_model(model_uri)  # type: ignore[attr-defined]
+            version_label = model_uri.split(":")[-1] if ":" in model_uri else model_uri
+            set_model_version(version_label)
+            print(f"✅ Model loaded from {model_uri} (MLflow)")
+            model_loaded = True
+        except Exception as e2:
+            print(f"❌ WARNING: Could not load model from local joblib or MLflow. Errors: {e} | {e2}")
+            print("⚠️  API will start without a model loaded. Model can be loaded later.")
+            model = None  # Set to None, API will return 503 for predictions
 
 
 @app.get("/")
@@ -184,6 +195,23 @@ async def predict_credit_risk(data: CreditDataInput):
                 status_code=400,
                 detail=f"Missing required features: {missing_features}"
             )
+        
+        # Workaround for XGBoost use_label_encoder issue
+        def fix_xgboost_model(pipeline):
+            """Remove deprecated use_label_encoder attribute from XGBoost models"""
+            try:
+                from xgboost import XGBClassifier
+                if hasattr(pipeline, 'named_steps'):
+                    for step_name, step in pipeline.named_steps.items():
+                        if isinstance(step, XGBClassifier) and hasattr(step, 'use_label_encoder'):
+                            delattr(step, 'use_label_encoder')
+                elif isinstance(pipeline, XGBClassifier) and hasattr(pipeline, 'use_label_encoder'):
+                    delattr(pipeline, 'use_label_encoder')
+            except:
+                pass  # Ignore if workaround fails
+        
+        # Apply workaround
+        fix_xgboost_model(model)
         
         # Make prediction in threadpool to avoid blocking
         prediction = (await run_in_threadpool(model.predict, input_data))[0]

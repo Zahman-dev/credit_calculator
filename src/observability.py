@@ -71,7 +71,7 @@ def _metrics_middleware_factory(app: FastAPI) -> Callable[[Request, Callable[[Re
 
 # ---- OpenTelemetry Tracing ----
 
-def _setup_tracing() -> None:
+def _setup_tracing(app: FastAPI) -> None:
     """Configure basic OTLP tracing if OTEL_EXPORTER_OTLP_ENDPOINT env var is set."""
     otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
     if not otlp_endpoint:
@@ -88,13 +88,13 @@ def _setup_tracing() -> None:
 
     resource = Resource.create({SERVICE_NAME: "credit-risk-api"})
     provider = TracerProvider(resource=resource)
-    span_exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)
+    span_exporter = OTLPSpanExporter(endpoint=otlp_endpoint)
     processor = BatchSpanProcessor(span_exporter)
     provider.add_span_processor(processor)
     trace.set_tracer_provider(provider)
 
     # Instrument FastAPI
-    FastAPIInstrumentor.instrument()
+    FastAPIInstrumentor().instrument_app(app)
 
 
 # ---- Public entry ----
@@ -105,6 +105,6 @@ def init_observability(app: FastAPI) -> None:  # noqa: D401 simple doc
     app.middleware("http")(_metrics_middleware_factory(app))  # type: ignore[arg-type]
 
     # Setup OpenTelemetry tracing (noop if env var not set)
-    _setup_tracing()
+    _setup_tracing(app)
 
     # Register custom collectors in default registry – already added by default via module import 

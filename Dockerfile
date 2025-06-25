@@ -12,36 +12,31 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     gcc \
     curl \
+    bash \
     && rm -rf /var/lib/apt/lists/*
 
-# -----------------------------------------------------------------
-# Install project dependencies directly from pyproject.toml (PEP-517)
-# -----------------------------------------------------------------
-
-# Copy project metadata first to leverage Docker layer cache
-COPY pyproject.toml README.md ./
+# Copy all necessary files BEFORE installing dependencies
+COPY pyproject.toml README.md LICENSE ./
+COPY src/ ./src/
+COPY main.py .
 
 # Install runtime dependencies defined in pyproject.toml (production only)
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir .
-
-# Copy source code
-COPY src/ ./src/
-COPY main.py .
 
 # Create necessary directories
 RUN mkdir -p models data
 
 # Set environment variables
 ENV PYTHONPATH=/app
-ENV MLFLOW_TRACKING_URI=http://localhost:5000
+# ENV MLFLOW_TRACKING_URI=http://localhost:5000
 
 # Expose port
-EXPOSE 80
+EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:80/health || exit 1
+    CMD curl -f http://localhost:8000/health || exit 1
 
 # Run the application
-CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "main:app", "--host", "0.0.0.0", "--port", "80"] 
+CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "main:app"] 

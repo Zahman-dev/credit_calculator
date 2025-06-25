@@ -1,37 +1,53 @@
-version: '3.8'
-
 services:
   # MLflow Tracking Server
   mlflow:
-    image: python:3.9-slim
+    image: python:3.10.17-slim
     ports:
-      - "5000:5000"
+      - "5001:5000"
     volumes:
       - ./mlruns:/mlflow/mlruns
       - ./mlartifacts:/mlflow/mlartifacts
     working_dir: /mlflow
     command: >
       bash -c "
+        apt-get update && apt-get install -y curl &&
         pip install mlflow boto3 pymysql &&
-        mlflow server 
-          --backend-store-uri file:///mlflow/mlruns
-          --default-artifact-root file:///mlflow/mlartifacts
-          --host 0.0.0.0
-          --port 5000
+        export MLFLOW_BACKEND_STORE_URI=file:///mlflow/mlruns &&
+        export MLFLOW_DEFAULT_ARTIFACT_ROOT=file:///mlflow/mlartifacts &&
+        mlflow server --host 0.0.0.0 --port 5000
       "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/2.0/mlflow/experiments/search?max_results=1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     environment:
-      - MLFLOW_TRACKING_URI=http://localhost:5000
+      - MLFLOW_TRACKING_URI=http://localhost:5001
+      - MLFLOW_BACKEND_STORE_URI=file:///mlflow/mlruns
+      - MLFLOW_DEFAULT_ARTIFACT_ROOT=file:///mlflow/mlartifacts
     networks:
       - credit-risk-network
+    restart: unless-stopped
 
   # Credit Risk API
   credit-risk-api:
-    build: .
+    container_name: credit-risk-api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >-
+      sh -c "echo 'Starting API directly...' && \
+      python -m uvicorn main:app --host 0.0.0.0 --port 8000"
     ports:
-      - "8000:80"
+      - "8001:8000"
+    env_file:
+      - .env
     environment:
       - MLFLOW_TRACKING_URI=http://mlflow:5000
       - MLFLOW_MODEL_NAME=credit_risk_model
+      - MODEL_URI=models:/credit_risk_model/Production
+      - FALLBACK_MODEL_PATH=/app/models/logistic_regression_model.joblib
     depends_on:
       - mlflow
     volumes:
@@ -43,7 +59,9 @@ services:
 
   # Jupyter Notebook for development
   jupyter:
-    image: jupyter/scipy-notebook:latest
+    build:
+      context: .
+      dockerfile: jupyter.Dockerfile
     ports:
       - "8888:8888"
     volumes:
@@ -53,7 +71,6 @@ services:
       - MLFLOW_TRACKING_URI=http://mlflow:5000
     networks:
       - credit-risk-network
-    command: start-notebook.sh
 
   # Prometheus for monitoring (optional)
   prometheus:

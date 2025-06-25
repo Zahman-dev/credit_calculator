@@ -110,7 +110,6 @@ MODEL_PARAMS = {
         'max_depth': 6,
         'learning_rate': 0.1,
         'random_state': 42,
-        'use_label_encoder': False,
         'eval_metric': 'logloss'
     },
     'logistic_regression': {
